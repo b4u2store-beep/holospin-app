@@ -793,45 +793,6 @@ export default function App() {
     }
   };
 
-  const sendConfigToDevice = async () => {
-    if (!isConnected) return;
-    
-    const payloadObject = {
-      pattern: activeEffect,
-      speed: motorSpeed,
-      intensity: brightness,
-      color: logoTintColor
-    };
-    const payloadStr = JSON.stringify(payloadObject);
-
-    try {
-      if (isBluetoothConnected) {
-        if (Capacitor.isNativePlatform() && connectedDeviceId) {
-          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', textToDataView(payloadStr));
-        } else if (connectedWebBleDevice && connectedWebBleDevice.gatt.connected) {
-          const service = await connectedWebBleDevice.gatt.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
-          const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
-          await characteristic.writeValue(new TextEncoder().encode(payloadStr));
-        }
-      } else if (esp32Ip) {
-        await fetch(getApiUrl("/config"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payloadStr
-        }).catch(err => console.debug("Fetch err (non-critical):", err));
-      }
-    } catch (err) {
-      console.error("Sync failed", err);
-    }
-  };
-
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      sendConfigToDevice();
-    }, 400); // Debounce to prevent flooding
-    return () => clearTimeout(handler);
-  }, [activeEffect, motorSpeed, brightness, logoTintColor, isConnected]);
-
   // Connection and Sensor State
   const [isConnected, setIsConnected] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -1434,6 +1395,45 @@ export default function App() {
     }
     return defaultState;
   });
+
+  const sendConfigToDevice = async () => {
+    if (!isConnected) return;
+    
+    const payloadObject = {
+      pattern: activeEffect,
+      speed: motorSpeed,
+      intensity: brightness,
+      color: logoTintColor
+    };
+    const payloadStr = JSON.stringify(payloadObject);
+
+    try {
+      if (isBluetoothConnected) {
+        if (Capacitor.isNativePlatform() && connectedDeviceId) {
+          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', textToDataView(payloadStr));
+        } else if (connectedWebBleDevice && connectedWebBleDevice.gatt.connected) {
+          const service = await connectedWebBleDevice.gatt.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
+          const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
+          await characteristic.writeValue(new TextEncoder().encode(payloadStr));
+        }
+      } else if (esp32Ip) {
+        await fetch(getApiUrl("/config"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payloadStr
+        }).catch(err => console.debug("Fetch err (non-critical):", err));
+      }
+    } catch (err) {
+      console.error("Sync failed", err);
+    }
+  };
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      sendConfigToDevice();
+    }, 400); // Debounce to prevent flooding
+    return () => clearTimeout(handler);
+  }, [activeEffect, motorSpeed, brightness, logoTintColor, isConnected]);
 
   const updateState = (cat: string, key: string, val: any) => {
     setState((p: any) => ({ ...p, [cat]: { ...p[cat], [key]: val } }));
