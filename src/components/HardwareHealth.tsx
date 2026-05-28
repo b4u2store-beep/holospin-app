@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Activity, Cpu, Lightbulb, RotateCcw } from "lucide-react";
 
-export function HardwareHealth() {
+export function HardwareHealth({ esp32Ip }: { esp32Ip: string }) {
   const [healthData, setHealthData] = useState<any>(null);
   const [isPolling, setIsPolling] = useState(true);
 
@@ -12,7 +12,10 @@ export function HardwareHealth() {
       try {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), 2000);
-        const res = await fetch("/api/diagnostic", { signal: controller.signal });
+        const urlBase = esp32Ip ? (esp32Ip.startsWith('http') ? esp32Ip : `http://${esp32Ip}`) : "";
+        const url = urlBase ? `${urlBase}/api/diagnostic` : "/api/diagnostic";
+        
+        const res = await fetch(url, { signal: controller.signal });
         clearTimeout(id);
         if (res.ok) {
           const data = await res.json();

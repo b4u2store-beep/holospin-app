@@ -59,7 +59,7 @@ import { LedVisualizer } from "./components/LedVisualizer";
 import { WiringGuide } from "./components/WiringGuide";
 import { Gauge } from "./components/Gauge";
 import { Capacitor } from '@capacitor/core';
-import { BleClient, textToDataView } from '@capacitor-community/bluetooth-le';
+import { BleClient } from '@capacitor-community/bluetooth-le';
 import planetImg from "./assets/images/hologram_planet_1779776225377.png";
 import galaxy0 from "./assets/images/galaxy_background_1779780757373.png";
 import galaxy1 from "./assets/images/hd_vivid_galaxy_1779780978111.png";
@@ -1406,15 +1406,18 @@ export default function App() {
       color: logoTintColor
     };
     const payloadStr = JSON.stringify(payloadObject);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(payloadStr);
+    const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
     try {
       if (isBluetoothConnected) {
         if (Capacitor.isNativePlatform() && connectedDeviceId) {
-          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', textToDataView(payloadStr));
+          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', dataView);
         } else if (connectedWebBleDevice && connectedWebBleDevice.gatt.connected) {
           const service = await connectedWebBleDevice.gatt.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
           const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
-          await characteristic.writeValue(new TextEncoder().encode(payloadStr));
+          await characteristic.writeValue(data);
         }
       } else if (esp32Ip) {
         await fetch(getApiUrl("/config"), {
@@ -3918,7 +3921,7 @@ void loop()
           </div>
 
           <div className="mx-auto w-full max-w-3xl mb-8">
-            <HardwareHealth />
+            <HardwareHealth esp32Ip={esp32Ip} />
           </div>
 
           <section>
