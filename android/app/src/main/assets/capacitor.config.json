@@ -1,5 +1,8 @@
 {
 	"appId": "com.example.app",
 	"appName": "ReactApp",
-	"webDir": "dist"
+	"webDir": "dist",
+	"server": {
+		"cleartext": true
+	}
 }

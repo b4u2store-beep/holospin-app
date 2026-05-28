@@ -59,7 +59,7 @@ import { LedVisualizer } from "./components/LedVisualizer";
 import { WiringGuide } from "./components/WiringGuide";
 import { Gauge } from "./components/Gauge";
 import { Capacitor } from '@capacitor/core';
-import { BleClient } from '@capacitor-community/bluetooth-le';
+import { BleClient, textToDataView } from '@capacitor-community/bluetooth-le';
 import planetImg from "./assets/images/hologram_planet_1779776225377.png";
 import galaxy0 from "./assets/images/galaxy_background_1779780757373.png";
 import galaxy1 from "./assets/images/hd_vivid_galaxy_1779780978111.png";
@@ -793,6 +793,45 @@ export default function App() {
     }
   };
 
+  const sendConfigToDevice = async () => {
+    if (!isConnected) return;
+    
+    const payloadObject = {
+      pattern: activeEffect,
+      speed: motorSpeed,
+      intensity: brightness,
+      color: logoTintColor
+    };
+    const payloadStr = JSON.stringify(payloadObject);
+
+    try {
+      if (isBluetoothConnected) {
+        if (Capacitor.isNativePlatform() && connectedDeviceId) {
+          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', textToDataView(payloadStr));
+        } else if (connectedWebBleDevice && connectedWebBleDevice.gatt.connected) {
+          const service = await connectedWebBleDevice.gatt.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
+          const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
+          await characteristic.writeValue(new TextEncoder().encode(payloadStr));
+        }
+      } else if (esp32Ip) {
+        await fetch(getApiUrl("/config"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payloadStr
+        }).catch(err => console.debug("Fetch err (non-critical):", err));
+      }
+    } catch (err) {
+      console.error("Sync failed", err);
+    }
+  };
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      sendConfigToDevice();
+    }, 400); // Debounce to prevent flooding
+    return () => clearTimeout(handler);
+  }, [activeEffect, motorSpeed, brightness, logoTintColor, isConnected]);
+
   // Connection and Sensor State
   const [isConnected, setIsConnected] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -1003,7 +1042,8 @@ export default function App() {
              id: device.id,
              name: device.name || "Web Bluetooth Device",
              ip: "Local",
-             strength: 100
+             strength: 100,
+             _device: device
           }]);
         }
       }
@@ -1016,6 +1056,44 @@ export default function App() {
     }
   };
 
+  const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
+  const [connectedWebBleDevice, setConnectedWebBleDevice] = useState<any>(null);
+
+  const handleManageDevice = async (device: any) => {
+    try {
+      setIsBluetoothConnecting(true);
+      if (Capacitor.isNativePlatform()) {
+        await BleClient.initialize();
+        await BleClient.connect(device.id); // device.id is deviceId
+        setConnectedDeviceId(device.id);
+        setIsBluetoothConnected(true);
+        setIsConnected(true);
+        setToastMessage(`חובר בהצלחה אל: ${device.name}`);
+        setSubPage("home");
+      } else {
+        if (device._device) {
+          await device._device.gatt.connect();
+          setConnectedWebBleDevice(device._device);
+          setIsBluetoothConnected(true);
+          setIsConnected(true);
+          setToastMessage(`חובר בהצלחה אל: ${device.name}`);
+          setSubPage("home");
+        } else {
+          // WiFi device fallback
+          setEsp32Ip(device.ip);
+          setIsConnected(true);
+          setToastMessage(`חובר באמצעות רשת אל: ${device.ip}`);
+          setSubPage("home");
+        }
+      }
+    } catch (err: any) {
+      console.error("Connection failed:", err);
+      setToastMessage(`שגיאת חיבור: ${err.message}`);
+    } finally {
+      setIsBluetoothConnecting(false);
+    }
+  };
+
   const handleConnectToSTA = async () => {
     if (!staSSID || !staPass) {
       setToastMessage("אנא הזן שם רשת וסיסמה / Please enter SSID & Pass");
@@ -1023,21 +1101,36 @@ export default function App() {
     }
     setToastMessage(`משדר הגדרות רשת ל-ESP32 עבור ${staSSID}...`);
     try {
-      const res = await fetch(getApiUrl("/config"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routerSsid: staSSID, routerPass: staPass })
-      });
-      if (!res.ok) throw new Error("Failed to configure WiFi");
+      const payload = JSON.stringify({ routerSsid: staSSID, routerPass: staPass });
+      
+      if (isBluetoothConnected) {
+        setToastMessage(`משדר דרך Bluetooth...`);
+        if (Capacitor.isNativePlatform() && connectedDeviceId) {
+          await BleClient.write(connectedDeviceId, '4fafc201-1fb5-459e-8fcc-c5c9c331914b', 'beb5483e-36e1-4688-b7f5-ea07361b26a8', textToDataView(payload));
+        } else if (connectedWebBleDevice && connectedWebBleDevice.gatt.connected) {
+          const service = await connectedWebBleDevice.gatt.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
+          const characteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
+          await characteristic.writeValue(new TextEncoder().encode(payload));
+        } else {
+           throw new Error("BLE Not fully connected");
+        }
+      } else {
+        const res = await fetch(getApiUrl("/config"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload
+        });
+        if (!res.ok) throw new Error("Failed to configure WiFi");
+      }
       
       setState((prev: any) => ({
         ...prev,
         wifi: { ...prev.wifi, mode: "STA", ssid: staSSID, ip: "" }
       }));
       setToastMessage("התחברת בהצלחה! המכשיר ינסה להתחבר לרשת כעת. / Configuration sent to device!");
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed STA config:", err);
-      setToastMessage("שגיאה בתקשורת מול המכשיר.");
+      setToastMessage(`שגיאה בתקשורת מול המכשיר: ${err.message}`);
     }
   };
 
@@ -3615,14 +3708,20 @@ void loop()
                       <div className="flex flex-col items-end gap-1">
                         <div className="flex items-center gap-1.5">
                           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_5px_#10b981]"></div>
-                          <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500 leading-none">CONNECTED</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-500 leading-none">FOUND</span>
                         </div>
                         <span className="text-[9px] text-[#38bdf8] font-mono uppercase font-bold tracking-tight bg-[#38bdf8]/10 px-1.5 py-0.5 rounded italic">Signal {device.strength}%</span>
                       </div>
                     </div>
                     <div className="flex items-center justify-between pt-3 border-t border-slate-800/50">
-                       <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Active & Ready</span>
-                       <button className="px-5 py-2 bg-[#00b4d8] hover:bg-[#0096b4] text-black rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(0,180,216,0.2)]">MANAGE DEVICE</button>
+                       <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Ready to Pair</span>
+                       <button 
+                         onClick={() => handleManageDevice(device)} 
+                         disabled={isBluetoothConnecting}
+                         className={`px-5 py-2 ${isBluetoothConnecting ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-[#00b4d8] hover:bg-[#0096b4] text-black shadow-[0_0_15px_rgba(0,180,216,0.2)]'} rounded-lg text-[10px] font-bold tracking-widest uppercase transition-all`}
+                       >
+                         {isBluetoothConnecting ? 'CONNECTING...' : 'CONNECT DEVICE'}
+                       </button>
                     </div>
                   </div>
                 ))}

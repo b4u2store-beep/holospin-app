@@ -71,6 +71,28 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
           Serial.print(rxValue[i]);
         Serial.println();
         Serial.println("*********");
+        
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, rxValue);
+        if (!error) {
+            if (doc.containsKey("pattern")) currentPattern = doc["pattern"].as<String>();
+            if (doc.containsKey("speed")) textSpeed = doc["speed"].as<int>();
+            if (doc.containsKey("intensity")) {
+                intensity = doc["intensity"].as<int>();
+                FastLED.setBrightness(intensity);
+            }
+            if (doc.containsKey("routerSsid")) {
+                String newSsid = doc["routerSsid"].as<String>();
+                String newPass = doc.containsKey("routerPass") ? doc["routerPass"].as<String>() : "";
+                Serial.println("Received new WiFi credentials via BLE: " + newSsid);
+                WiFi.disconnect();
+                WiFi.begin(newSsid.c_str(), newPass.c_str());
+            }
+            if (doc.containsKey("color")) {
+                long colorVal = strtol(doc["color"].as<String>().substring(1).c_str(), NULL, 16);
+                patternColor = CRGB(colorVal >> 16, (colorVal >> 8) & 0xFF, colorVal & 0xFF);
+            }
+        }
       }
     }
 };
@@ -200,6 +222,13 @@ void setup() {
         if (doc.containsKey("color")) {
           long colorVal = strtol(doc["color"].as<String>().substring(1).c_str(), NULL, 16);
           patternColor = CRGB(colorVal >> 16, (colorVal >> 8) & 0xFF, colorVal & 0xFF);
+        }
+        if (doc.containsKey("routerSsid")) {
+            String newSsid = doc["routerSsid"].as<String>();
+            String newPass = doc.containsKey("routerPass") ? doc["routerPass"].as<String>() : "";
+            Serial.println("Received new WiFi credentials via /config: " + newSsid);
+            WiFi.disconnect();
+            WiFi.begin(newSsid.c_str(), newPass.c_str());
         }
         request->send(200, "text/plain", "OK");
     });
