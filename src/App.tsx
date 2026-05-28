@@ -59,6 +59,8 @@ import { HardwareHealth } from "./components/HardwareHealth";
 import { LedVisualizer } from "./components/LedVisualizer";
 import { WiringGuide } from "./components/WiringGuide";
 import { Gauge } from "./components/Gauge";
+import { Capacitor } from '@capacitor/core';
+import { BleClient } from '@capacitor-community/bluetooth-le';
 import planetImg from "./assets/images/hologram_planet_1779776225377.png";
 import galaxy0 from "./assets/images/galaxy_background_1779780757373.png";
 import galaxy1 from "./assets/images/hd_vivid_galaxy_1779780978111.png";
@@ -801,19 +803,34 @@ export default function App() {
   const handleBluetoothConnect = async () => {
     try {
       setIsBluetoothConnecting(true);
-      if (!(navigator as any).bluetooth) {
-        setToastMessage("דפדפן זה אינו תומך ב-Bluetooth (Web Bluetooth API)");
-        setIsBluetoothConnecting(false);
-        return;
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await BleClient.initialize();
+          const device = await BleClient.requestDevice({
+            optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
+          });
+          await BleClient.connect(device.deviceId);
+          setIsBluetoothConnected(true);
+          setIsConnected(true);
+          setToastMessage(`חובר בהצלחה ל-Bluetooth: ${device.name || "מכשיר כלשהו"}`);
+        } catch (err: any) {
+          setToastMessage(`שגיאת Bluetooth (Native): ${err.message}`);
+        }
+      } else {
+        if (!(navigator as any).bluetooth) {
+          setToastMessage("דפדפן זה אינו תומך ב-Bluetooth (Web Bluetooth API)");
+          setIsBluetoothConnecting(false);
+          return;
+        }
+        const device = await (navigator as any).bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
+        });
+        await device.gatt.connect();
+        setIsBluetoothConnected(true);
+        setIsConnected(true); // Treat BT connection as overall connection
+        setToastMessage(`חובר בהצלחה ל-Bluetooth: ${device.name || "מכשיר כלשהו"}`);
       }
-      const device = await (navigator as any).bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
-      });
-      await device.gatt.connect();
-      setIsBluetoothConnected(true);
-      setIsConnected(true); // Treat BT connection as overall connection
-      setToastMessage(`חובר בהצלחה ל-Bluetooth: ${device.name || "מכשיר כלשהו"}`);
     } catch (err: any) {
       if (err.name !== "NotFoundError") {
         setToastMessage(`שגיאת Bluetooth: ${err.message}`);
@@ -1039,7 +1056,8 @@ export default function App() {
     try {
       const controller = new AbortController();
       const id = setTimeout(() => controller.abort(), 2000);
-      const url = esp32Ip ? `http://${esp32Ip}/status` : "/status";
+      const urlBase = esp32Ip ? (esp32Ip.startsWith('http') ? esp32Ip : `http://${esp32Ip}`) : "";
+      const url = urlBase ? `${urlBase}/status` : "/status";
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(id);
       if (!res.ok) throw new Error("Status fetch non-ok");
@@ -1410,13 +1428,21 @@ export default function App() {
             ESP32 CONNECTION
           </h3>
           <InputField
-            label="ESP32 IP ADDRESS"
+            label="ESP32 IP ADDRESS OR HOSTNAME"
             value={esp32Ip}
             onChange={setEsp32Ip}
             innerRight={<span></span>}
           />
+          <div className="flex gap-2">
+            <button className="flex-1 bg-slate-800 text-slate-300 text-[10px] uppercase font-bold py-2 rounded-lg active:scale-95 transition-transform" onClick={() => setEsp32Ip("192.168.4.1")}>
+              USE AP IP (192.168.4.1)
+            </button>
+            <button className="flex-1 bg-[#00b4d8]/20 text-[#00b4d8] text-[10px] uppercase font-bold py-2 rounded-lg active:scale-95 transition-transform" onClick={() => setEsp32Ip("holospin.local")}>
+              USE LOCAL HOSTNAME
+            </button>
+          </div>
           <p className="text-[11px] text-slate-500">
-            Enter the IP address of your ESP32 device to connect directly for API status and control.
+            Enter the IP address of your ESP32 device, use <strong>holospin.local</strong> if on the same Wi-Fi router, or <strong>192.168.4.1</strong> if connected directly to the Holospin_AP network.
           </p>
         </div>
       );
@@ -3201,7 +3227,7 @@ void loop()
               }`}
               onClick={() => setBgImageId("video1")}
             >
-              <video src={video1} autoPlay loop muted playsInline className="absolute inset-0 w-full h-full object-cover z-0 opacity-60 pointer-events-none" />
+              <video src={video1} autoPlay loop muted playsInline crossOrigin="anonymous" className="absolute inset-0 w-full h-full object-cover z-0 opacity-60 pointer-events-none" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent z-10 pointer-events-none"></div>
               <span className="relative z-20 font-bold text-white tracking-widest text-[11px] pointer-events-none">BIG BANG (VIDEO)</span>
             </div>
@@ -3212,7 +3238,7 @@ void loop()
               }`}
               onClick={() => setBgImageId("video2")}
             >
-              <video src={video2} autoPlay loop muted playsInline className="absolute inset-0 w-full h-full object-cover z-0 opacity-60 pointer-events-none" />
+              <video src={video2} autoPlay loop muted playsInline crossOrigin="anonymous" className="absolute inset-0 w-full h-full object-cover z-0 opacity-60 pointer-events-none" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent z-10 pointer-events-none"></div>
               <span className="relative z-20 font-bold text-white tracking-widest text-[11px] pointer-events-none">GALAXY SPIRAL (VIDEO)</span>
             </div>
@@ -3400,7 +3426,7 @@ void loop()
                 <div className="flex items-center justify-between border border-slate-800/80 bg-slate-950/50 rounded-xl p-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded border border-slate-800 bg-black/55 overflow-hidden flex items-center justify-center">
-                      <video src={synthVideoUrl} muted autoPlay loop playsInline className="w-full h-full object-cover" />
+                      <video src={synthVideoUrl} muted autoPlay loop playsInline crossOrigin="anonymous" className="w-full h-full object-cover" />
                     </div>
                     <div className="flex flex-col">
                       <span className="text-[11px] font-bold text-slate-200">סרטון פעיל / Active Video</span>

@@ -74,6 +74,7 @@ export const GalaxyBackground: React.FC<Props> = ({ bgImageId = "galaxy1" }) => 
             loop
             muted
             playsInline
+            crossOrigin="anonymous"
             className="absolute w-full h-full object-cover opacity-80 transition-opacity duration-1000"
             style={{ 
               imageRendering: "high-quality" as any,
