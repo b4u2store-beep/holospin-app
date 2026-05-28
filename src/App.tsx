@@ -766,6 +766,11 @@ export default function App() {
 
   const [showPass, setShowPass] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [esp32Ip, setEsp32Ip] = useState<string>(() => safeGetLocal("holospin_esp32Ip") || "");
+
+  useEffect(() => {
+    safeSaveLocal("holospin_esp32Ip", esp32Ip);
+  }, [esp32Ip]);
 
   const handleSelectEffect = (effectId: string) => {
     setActiveEffect(effectId);
@@ -1034,7 +1039,8 @@ export default function App() {
     try {
       const controller = new AbortController();
       const id = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch("/status", { signal: controller.signal });
+      const url = esp32Ip ? `http://${esp32Ip}/status` : "/status";
+      const res = await fetch(url, { signal: controller.signal });
       clearTimeout(id);
       if (!res.ok) throw new Error("Status fetch non-ok");
       const data = await res.json();
@@ -1397,6 +1403,24 @@ export default function App() {
   };
 
   const renderContent = () => {
+    if (subPage === "esp32_connection") {
+      return (
+        <div className="px-5 pt-2 pb-28 flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-4">
+          <h3 className="text-[11px] text-slate-400 font-bold tracking-widest uppercase">
+            ESP32 CONNECTION
+          </h3>
+          <InputField
+            label="ESP32 IP ADDRESS"
+            value={esp32Ip}
+            onChange={setEsp32Ip}
+            innerRight={<span></span>}
+          />
+          <p className="text-[11px] text-slate-500">
+            Enter the IP address of your ESP32 device to connect directly for API status and control.
+          </p>
+        </div>
+      );
+    }
     if (subPage === "wifi") {
       return (
         <div className="px-5 pt-2 pb-28 flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-4">
@@ -4233,6 +4257,12 @@ void loop()
               icon={<Wifi className="w-5 h-5" />}
               title="WiFi Settings"
               subtitle="Holospin_POV2"
+            />
+            <SettingsRow
+              onClick={() => setSubPage("esp32_connection")}
+              icon={<Cpu className="w-5 h-5" />}
+              title="ESP32 Connection"
+              subtitle="Configure Static IP"
             />
             <SettingsRow
               onClick={() => setSubPage("led")}
