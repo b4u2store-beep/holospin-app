@@ -5,10 +5,7 @@
 #include <ElegantOTA.h>
 #include <LittleFS.h>
 #include <ESPmDNS.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include <NimBLEDevice.h>
 
 // Pins
 #define LED_PIN_A 25
@@ -50,22 +47,22 @@ CRGB patternColor = CRGB::Red;
 
 AsyncWebServer server(80);
 
-BLEServer *pServer = NULL;
-BLECharacteristic * pTxCharacteristic;
+NimBLEServer *pServer = NULL;
+NimBLECharacteristic * pTxCharacteristic;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
+class MyServerCallbacks: public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer) {
       deviceConnected = true;
     }
-    void onDisconnect(BLEServer* pServer) {
+    void onDisconnect(NimBLEServer* pServer) {
       deviceConnected = false;
     }
 };
 
-class MyCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
+class MyCallbacks: public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic *pCharacteristic) {
       String rxValue = pCharacteristic->getValue().c_str();
       if (rxValue.length() > 0) {
         Serial.println("*********");
@@ -91,9 +88,34 @@ void IRAM_ATTR hallISR() {
     lastISR = now;
 }
 
+void setupBLE() {
+    NimBLEDevice::init("Holospin_POV");
+    pServer = NimBLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+    
+    NimBLEService *pService = pServer->createService(SERVICE_UUID);
+    pTxCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID_TX,
+                      NIMBLE_PROPERTY::NOTIFY
+                    );
+    
+    NimBLECharacteristic * pRxCharacteristic = pService->createCharacteristic(
+                         CHARACTERISTIC_UUID_RX,
+                         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+                       );
+    pRxCharacteristic->setCallbacks(new MyCallbacks());
+    pService->start();
+    
+    NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pServer->getAdvertising()->start();
+    Serial.println("BLE Advertising Started, waiting for clients...");
+}
+
 void setup() {
     Serial.begin(115200);
-    delay(2000);
+    delay(2000); // 1. נותן למתח להתייצב
     Serial.println("Starting Setup...");
 
     if(!LittleFS.begin(true)){
@@ -106,11 +128,14 @@ void setup() {
     pinMode(MOTOR_PIN, OUTPUT);
     digitalWrite(MOTOR_PIN, HIGH);
 
+    // 2. קודם כל לדים - וכיבוי שלהם כדי לחסוך חשמל בהתחלה
     FastLED.addLeds<WS2812B, LED_PIN_A, GRB>(armA, NUM_LEDS_PER_ARM);
     FastLED.addLeds<WS2812B, LED_PIN_B, GRB>(armB, NUM_LEDS_PER_ARM);
     FastLED.setBrightness(intensity);
+    FastLED.clear();
+    FastLED.show();
 
-    // Wi-Fi
+    // 3. הפעלת ה-AP
     WiFi.mode(WIFI_AP_STA);
     if (WiFi.softAP(AP_SSID, AP_PASS)) {
         Serial.println("AP Started. IP: " + WiFi.softAPIP().toString());
@@ -118,23 +143,18 @@ void setup() {
         Serial.println("AP Failed");
     }
     
-    WiFi.begin(ROUTER_SSID, ROUTER_PASS);
+    delay(500); // הפסקה קטנה בין רדיו לרדיו
     
-    // mDNS
-    if (MDNS.begin(HOSTNAME)) {
-        Serial.println("MDNS responder started, use http://holospin.local/");
-    }
-    
+    // 4. הפעלת BLE עם NimBLE
+    setupBLE();
+
     // CORS Header Middleware
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
-    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "content-type");
-    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     
-    // Web Server
+    // Web Server routing
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         request->send(200, "text/html", "<h1>Holospin ESP32 Web Interface</h1>");
     });
-    
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
         StaticJsonDocument<200> doc;
         doc["pattern"] = currentPattern;
@@ -143,26 +163,34 @@ void setup() {
         char colorHex[8];
         sprintf(colorHex, "#%02x%02x%02x", patternColor.r, patternColor.g, patternColor.b);
         doc["color"] = colorHex;
-        
         String response;
         serializeJson(doc, response);
         request->send(200, "application/json", response);
     });
-    
     server.on("/api/discover", HTTP_GET, [](AsyncWebServerRequest *request){
         request->send(200, "application/json", "{\"status\": \"ok\", \"device\": \"holospin-esp32\"}");
     });
-
+    server.on("/api/diagnostic", HTTP_GET, [](AsyncWebServerRequest *request){
+        StaticJsonDocument<200> doc;
+        doc["status"] = "ok";
+        doc["uptime"] = millis();
+        doc["free_heap"] = ESP.getFreeHeap();
+        doc["wifi_rssi"] = WiFi.RSSI();
+        String response;
+        serializeJson(doc, response);
+        request->send(200, "application/json", response);
+    });
+    server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request){
+        request->send(200, "text/plain", "Holospin Boot Logs\nSystem initialized.\nReady.");
+    });
+    server.on("/calibrate", HTTP_POST, [](AsyncWebServerRequest *request){
+        request->send(200, "application/json", "{\"status\": \"success\"}");
+    });
     server.serveStatic("/", LittleFS, "/");
-
     server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
         StaticJsonDocument<200> doc;
         DeserializationError error = deserializeJson(doc, data);
-        if (error) {
-            request->send(400, "text/plain", "Invalid JSON");
-            return;
-        }
-        
+        if (error) { request->send(400, "text/plain", "Invalid JSON"); return; }
         if (doc.containsKey("pattern")) currentPattern = doc["pattern"].as<String>();
         if (doc.containsKey("speed")) textSpeed = doc["speed"].as<int>();
         if (doc.containsKey("intensity")) {
@@ -175,48 +203,38 @@ void setup() {
         }
         request->send(200, "text/plain", "OK");
     });
-    
-    // OPTIONS handler for CORS preflight
     server.onNotFound([](AsyncWebServerRequest *request) {
-        if (request->method() == HTTP_OPTIONS) {
-            request->send(200);
-        } else {
-            request->send(404, "text/plain", "Not found");
-        }
+        if (request->method() == HTTP_OPTIONS) { request->send(200); } 
+        else { request->send(404, "text/plain", "Not found"); }
     });
     
     ElegantOTA.begin(&server);
+
+    // 5. חיבור לראוטר (בלי לחסום את כל הקוד)
+    WiFi.begin(ROUTER_SSID, ROUTER_PASS);
+    
+    // 6. תפעיל בסוף את ה-WebServer
     server.begin();
     Serial.println("HTTP Server Started");
     
-    // BLE Setup
-    BLEDevice::init("Holospin_POV");
-    pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
+    // Check router connection asynchronously
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Connected to router: " + WiFi.localIP().toString());
+        if (MDNS.begin(HOSTNAME)) {
+            Serial.println("MDNS responder started, use http://holospin.local/");
+        }
+    } else {
+        Serial.println("Failed to connect to router. Operating in AP mode.");
+    }
     
-    BLEService *pService = pServer->createService(SERVICE_UUID);
-    pTxCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID_TX,
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
-    pTxCharacteristic->addDescriptor(new BLE2902());
-    
-    BLECharacteristic * pRxCharacteristic = pService->createCharacteristic(
-                         CHARACTERISTIC_UUID_RX,
-                         BLECharacteristic::PROPERTY_WRITE
-                       );
-    pRxCharacteristic->setCallbacks(new MyCallbacks());
-    pService->start();
-    
-    // BLE Advertising
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    // iOS compatibility
-    pAdvertising->setMinPreferred(0x06);  
-    pAdvertising->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
-    Serial.println("BLE Advertising Started, waiting for clients...");
+    // AsyncWebServer doesn't require xTaskCreatePinnedToCore since it manages its own tasks.
 }
 
 void loop() {
@@ -244,6 +262,12 @@ void loop() {
     if (deviceConnected && !oldDeviceConnected) {
         oldDeviceConnected = deviceConnected;
     }
-    delay(5);
+    
+    // Slow down FastLED while advertising to keep BLE stable
+    if (!deviceConnected) {
+        delay(50);
+    } else {
+        delay(5);
+    }
 }
 

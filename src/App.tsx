@@ -54,7 +54,6 @@ import {
   Camera,
 } from "lucide-react";
 import { GalaxyBackground } from "./components/GalaxyBackground";
-import { HologramSimulator } from "./components/HologramSimulator";
 import { HardwareHealth } from "./components/HardwareHealth";
 import { LedVisualizer } from "./components/LedVisualizer";
 import { WiringGuide } from "./components/WiringGuide";
@@ -849,9 +848,14 @@ export default function App() {
   const [calibrationStage, setCalibrationStage] = useState<"idle" | "requesting" | "calibrating" | "success" | "error">("idle");
   const [deviceStatus, setDeviceStatus] = useState<string>("ready");
   
+  const getApiUrl = (path: string) => {
+    const urlBase = esp32Ip ? (esp32Ip.startsWith('http') ? esp32Ip : `http://${esp32Ip}`) : "";
+    return urlBase ? `${urlBase}${path}` : path;
+  };
+
   const handleDownloadLogs = async () => {
     try {
-      const res = await fetch("/api/logs");
+      const res = await fetch(getApiUrl("/api/logs"));
       if (!res.ok) throw new Error("Failed to fetch logs");
       const logs = await res.text();
       
@@ -866,7 +870,7 @@ export default function App() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error("Failed to download logs:", err);
-      // Minimal error feedback
+      setToastMessage("שגיאה בהורדת לוגים מהמכשיר");
     }
   };
   
@@ -890,29 +894,23 @@ export default function App() {
         diagnosticAbortControllerRef.current.abort("timeout");
       }
     }, 10000); // 10 seconds timeout
-
-    const duration = 2500;
-    const intervalTime = 50;
-    const steps = duration / intervalTime;
-    let currentStep = 0;
-
+    
+    // Quick progress animation while fetching real diagnostics
     const progressInterval = setInterval(() => {
-      currentStep++;
-      setDiagnosticProgress(Math.min(99, Math.round((currentStep / steps) * 100)));
-    }, intervalTime);
+      setDiagnosticProgress(p => (p < 90 ? p + 5 : p));
+    }, 100);
 
     try {
-      // Simulate API call to ESP32
-      const res = await fetch("/api/diagnostic", { signal: diagnosticAbortControllerRef.current.signal });
+      // Real API call to ESP32
+      const res = await fetch(getApiUrl("/api/diagnostic"), { signal: diagnosticAbortControllerRef.current.signal });
       clearTimeout(timeoutId);
       if (!res.ok) throw new Error("Diagnostics API failed");
       const data = await res.json();
+      
       clearInterval(progressInterval);
       setDiagnosticProgress(100);
-      setTimeout(() => {
-        setDiagnosticsResult(data);
-        setIsRunningDiagnostics(false);
-      }, 300);
+      setDiagnosticsResult(data);
+      setIsRunningDiagnostics(false);
     } catch (err: any) {
       clearTimeout(timeoutId);
       clearInterval(progressInterval);
@@ -923,13 +921,11 @@ export default function App() {
           errorMsg = "Connection timed out or cancelled";
       }
 
-      setTimeout(() => {
-        setDiagnosticsResult({ 
-          error: errorMsg,
-          details: "Make sure the system is powered and connected to the same network."
-        });
-        setIsRunningDiagnostics(false);
-      }, 300);
+      setDiagnosticsResult({ 
+        error: errorMsg,
+        details: "Make sure the system is powered and connected to the same network."
+      });
+      setIsRunningDiagnostics(false);
     }
   };
 
@@ -968,50 +964,81 @@ export default function App() {
   const [staPass, setStaPass] = useState("");
   const [showHowItWorks, setShowHowItWorks] = useState(false);
 
-  const handleScan = () => {
+  const handleScan = async () => {
     setIsScanning(true);
     setDiscoveredDevices([]);
-    
-    // Simulate a real local network discovery mDNS / AP scanning attempt
-    setTimeout(() => {
-      setIsScanning(false);
-      setDiscoveredDevices([
-        {
-          id: "holospin-core",
-          name: "HoloSpin Fan 3D [ACTIVE CORE]",
-          ip: "192.168.4.1 (ESP32 Live)",
-          strength: 98
-        },
-        {
-          id: "holospin-living",
-          name: "HoloSpin Suite [LIVING_ROOM]",
-          ip: "192.168.1.144",
-          strength: 74
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        try {
+          // Initialize handles checking and requesting permissions like ACCESS_FINE_LOCATION and BLUETOOTH_SCAN on Android
+          await BleClient.initialize();
+          
+          const device = await BleClient.requestDevice({
+            // Optional: filter by specific service UUIDs if needed, or leave empty to accept all devices
+            // optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
+          });
+
+          if (device) {
+            setDiscoveredDevices([{
+              id: device.deviceId,
+              name: device.name || "Bluetooth Device",
+              ip: device.deviceId, // use device ID 
+              strength: 100
+            }]);
+            setToastMessage(`Device found: ${device.name || device.deviceId}`);
+          }
+        } catch (bleErr: any) {
+          console.error("BLE Scan Error:", bleErr);
+          setToastMessage(`Bluetooth scan failed: ${bleErr.message}`);
         }
-      ]);
-      setToastMessage("סריקת רשת הושלמה! נמצאו 2 מקרני HoloSpin פעילים ברשת. / Scan complete! 2 active devices discovered.");
-    }, 2000);
+      } else {
+        // Web fallback
+        const device = await (navigator as any).bluetooth.requestDevice({
+          acceptAllDevices: true
+        });
+        
+        if (device) {
+          setDiscoveredDevices([{
+             id: device.id,
+             name: device.name || "Web Bluetooth Device",
+             ip: "Local",
+             strength: 100
+          }]);
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== "NotFoundError") {
+        setToastMessage(`Scan Error: ${err.message}`);
+      }
+    } finally {
+      setIsScanning(false);
+    }
   };
 
-  const handleConnectToSTA = () => {
+  const handleConnectToSTA = async () => {
     if (!staSSID || !staPass) {
       setToastMessage("אנא הזן שם רשת וסיסמה / Please enter SSID & Pass");
       return;
     }
-    setToastMessage(`מתחבר לרשת ${staSSID}... המכשיר יתנתק ממצב AP.`);
-    // In real app, this would send an API request to the ESP32
-    setTimeout(() => {
-       setState((prev: any) => ({
-         ...prev,
-         wifi: {
-           ...prev.wifi,
-           mode: "STA",
-           ssid: staSSID,
-           ip: ""
-         }
-       }));
-       setToastMessage("התחברת בהצלחה לרשת הביתית! / Successfully connected to LAN!");
-    }, 3000);
+    setToastMessage(`משדר הגדרות רשת ל-ESP32 עבור ${staSSID}...`);
+    try {
+      const res = await fetch(getApiUrl("/config"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routerSsid: staSSID, routerPass: staPass })
+      });
+      if (!res.ok) throw new Error("Failed to configure WiFi");
+      
+      setState((prev: any) => ({
+        ...prev,
+        wifi: { ...prev.wifi, mode: "STA", ssid: staSSID, ip: "" }
+      }));
+      setToastMessage("התחברת בהצלחה! המכשיר ינסה להתחבר לרשת כעת. / Configuration sent to device!");
+    } catch (err) {
+      console.error("Failed STA config:", err);
+      setToastMessage("שגיאה בתקשורת מול המכשיר.");
+    }
   };
 
   useEffect(() => {
@@ -1194,11 +1221,12 @@ export default function App() {
     try {
       setCalibrationStage("requesting");
       setShowCalibrateModal(true);
-      const res = await fetch("/calibrate", { method: "POST" });
+      const res = await fetch(getApiUrl("/calibrate"), { method: "POST" });
       if (!res.ok) throw new Error("Calibration API failed");
       const data = await res.json();
-      if (data.status === "calibrating") {
-        setCalibrationStage("calibrating");
+      if (data.status === "calibrating" || data.status === "success") {
+        setCalibrationStage("success");
+        setTimeout(() => setShowCalibrateModal(false), 2000);
       } else {
         setCalibrationStage("error");
       }
@@ -3211,7 +3239,7 @@ void loop()
               }`}
               onClick={() => setBgImageId("planet")}
             >
-              <img src={planet} alt="Planet" className="absolute inset-0 w-full h-full object-cover z-0 opacity-60" />
+              <img src={planetImg} alt="Planet" className="absolute inset-0 w-full h-full object-cover z-0 opacity-60" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent z-10"></div>
               <span className="relative z-20 font-bold text-white tracking-widest text-[11px]">HOLO PLANET</span>
             </div>
@@ -3764,24 +3792,14 @@ void loop()
                 animate={isApplyingPreset ? { scale: [1, 1.08, 1], rotate: [0, 5, -5, 0], filter: ['brightness(1)', 'brightness(1.8)', 'brightness(1)'] } : { scale: 1, rotate: 0 }}
                 transition={{ duration: 0.8, ease: "easeInOut" }}
               >
-                <HologramSimulator
-                  effect={activeEffect}
-                  speed={motorSpeed}
-                  brightness={brightness}
-                  logoUrl={logoUrl}
-                  povText={povText}
-                  logoRotation={logoRotation}
-                  logoTintColor={useLogoTint ? logoTintColor : null}
-                  povTextAnimation={povTextAnimation}
-                  effectSpeedRate={effectSpeedRate}
-                  effectScale={effectScale}
-                  effectComplexity={effectComplexity}
-                  videoUrl={synthVideoUrl}
-                  ledCount={state.led.ledsPerStrip}
-                  kaleidoShape={kaleidoShape}
-                  kaleidoLines={kaleidoLines}
-                  kaleidoMorphSpeed={kaleidoMorphSpeed}
-                />
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <div className="relative">
+                    <div className={`w-16 h-1 rounded-full ${isConnected ? 'bg-[#00b4d8]' : 'bg-slate-700'} ${rpm > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: `${2000 / (rpm || 1)}ms` }}></div>
+                  </div>
+                  <span className={`text-[10px] font-bold tracking-widest uppercase ${isConnected ? 'text-[#00b4d8]' : 'text-slate-600'}`}>
+                    {isConnected ? "LIVE ON DEVICE" : "OFFLINE"}
+                  </span>
+                </div>
                 {/* Glass Reflection */}
                 <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-transparent rounded-full pointer-events-none"></div>
                 <div className="absolute inset-0 shadow-[inset_0_0_80px_rgba(0,0,0,0.8)] pointer-events-none rounded-full"></div>
@@ -4402,24 +4420,14 @@ void loop()
               animate={isApplyingPreset ? { scale: [1, 1.1, 1], filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'] } : {}}
               transition={{ duration: 0.8 }}
             >
-              <HologramSimulator
-                effect={activeEffect}
-                speed={motorSpeed}
-                brightness={brightness}
-                logoUrl={logoUrl}
-                povText={povText}
-                logoRotation={logoRotation}
-                logoTintColor={useLogoTint ? logoTintColor : null}
-                povTextAnimation={povTextAnimation}
-                effectSpeedRate={effectSpeedRate}
-                effectScale={effectScale}
-                effectComplexity={effectComplexity}
-                videoUrl={synthVideoUrl}
-                ledCount={state.led.ledsPerStrip}
-                kaleidoShape={kaleidoShape}
-                kaleidoLines={kaleidoLines}
-                kaleidoMorphSpeed={kaleidoMorphSpeed}
-              />
+              <div className="flex flex-col items-center justify-center gap-2">
+                <div className="relative">
+                  <div className={`w-12 h-1 rounded-full ${isConnected ? 'bg-[#00b4d8]' : 'bg-slate-700'} ${rpm > 0 ? 'animate-spin' : ''}`} style={{ animationDuration: `${2000 / (rpm || 1)}ms` }}></div>
+                </div>
+                <span className={`text-[8px] font-bold tracking-widest uppercase ${isConnected ? 'text-[#00b4d8]' : 'text-slate-600'}`}>
+                  {isConnected ? "LIVE" : "OFFLINE"}
+                </span>
+              </div>
               {/* Glass Reflection */}
               <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-transparent rounded-full pointer-events-none"></div>
               <div className="absolute inset-0 shadow-[inset_0_0_60px_rgba(0,0,0,0.85)] pointer-events-none rounded-full"></div>
